@@ -9,6 +9,7 @@ dependencies = [
     "piper-tts>=1.4.0",
     "pyserial>=3.5",
     "requests>=2.31",
+    "litellm>=1.75,<2",
     "setuptools<81",
     "ultralytics>=8.0",
 ]
