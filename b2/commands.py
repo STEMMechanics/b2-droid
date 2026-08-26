@@ -8,6 +8,85 @@ unit test and change without starting the robot.
 import re
 
 
+def parse_hardware_intent(text):
+    """Parse conservative hardware commands into deterministic candidates.
+
+    Complex/ambiguous descriptions deliberately return ``None`` so a model may
+    propose the same schema; HardwareRegistry must still validate that proposal.
+    """
+    lowered = text.lower().strip().rstrip(".?!")
+    if re.search(r"\b(?:what hardware|list (?:the )?hardware|hardware (?:is|do you (?:currently )?have).*(?:connected|configured))\b", lowered):
+        return {"action": "list"}
+    if re.search(r"\b(?:what|which) (?:pins|resources).*(?:free|available)|list (?:free|available) (?:pins|resources)\b", lowered):
+        return {"action": "resources"}
+    if re.search(r"\bscan (?:your |the )?i2c bus\b", lowered):
+        return {"action": "scan_i2c"}
+    match = re.search(r"\b(?:test|read) (?:your |the )?([a-z][a-z0-9_ ]*)$", lowered)
+    if match:
+        name = re.sub(r"\s+", "_", match.group(1))
+        name = {"front_sonar": "front_sonar", "front_sonar_sensor": "front_sonar"}.get(name, name)
+        return {"action": "test" if lowered.startswith("test") else "read", "name": name}
+    match = re.search(r"\b(?:remove|disconnect|forget) (?:your |the )?([a-z][a-z0-9_ ]*)$", lowered)
+    if match:
+        return {"action": "remove", "name": re.sub(r"\s+", "_", match.group(1))}
+
+    sonar = re.search(
+        r"(?:connected|added|installed).*?(?:(front|rear|left|right) )?ultrasonic(?: sensor)?"
+        r".*?trigger (?:on|to) (d(?:[0-9]|1[0-3])|a[0-5]).*?echo (?:on|to) (d(?:[0-9]|1[0-3])|a[0-5])",
+        lowered,
+    )
+    if sonar:
+        position = sonar.group(1) or "new"
+        return {"action": "add", "candidate": {
+            "friendly_name": f"{position}_sonar", "device_type": "ultrasonic",
+            "pins": {"trigger": sonar.group(2).upper(), "echo": sonar.group(3).upper()},
+        }}
+    ir = re.search(r"(?:connected|added|installed).*?(?:(front|rear|left|right) )?ir distance sensor.*?(?:on|to) (a[0-5])", lowered)
+    if ir:
+        return {"action": "add", "candidate": {
+            "friendly_name": f"{ir.group(1) or 'new'}_ir", "device_type": "ir_distance",
+            "pins": {"analogue": ir.group(2).upper()},
+        }}
+    bus = re.search(r"(?:added|connected|installed) (?:an? )?(mcp23008|pca9685)(?:.*?(0x[0-9a-f]{2}|\d+))?", lowered)
+    if bus:
+        kind = bus.group(1)
+        candidate = {"friendly_name": f"{kind}_1", "device_type": kind, "pins": {}}
+        if bus.group(2):
+            candidate["i2c_address"] = bus.group(2)
+        return {"action": "add", "candidate": candidate}
+    extra_motor = re.search(
+        r"(?:connected|added|installed) (?:another |an? )?l298n.*?"
+        r"(?:using|on) (mcp23008(?:_[a-z0-9_]+)?) pins? ([0-7]) through ([0-7])",
+        lowered,
+    )
+    if extra_motor:
+        start, end = int(extra_motor.group(2)), int(extra_motor.group(3))
+        if end - start == 3:
+            parent = extra_motor.group(1)
+            if parent == "mcp23008":
+                parent = "mcp23008_1"
+            return {"action": "add", "candidate": {
+                "friendly_name": "l298n_2", "device_type": "l298n",
+                "pins": {role: f"{parent}:GP{pin}" for role, pin in zip(
+                    ("in1", "in2", "in3", "in4"), range(start, end + 1)
+                )},
+            }}
+    return None
+
+
+def validate_hardware_candidate(payload):
+    """Reject malformed model envelopes before the registry sees them."""
+    if not isinstance(payload, dict) or payload.get("action") not in {
+        "add", "remove", "list", "resources", "scan_i2c", "test", "read"
+    }:
+        raise ValueError("malformed hardware intent")
+    if payload["action"] == "add" and not isinstance(payload.get("candidate"), dict):
+        raise ValueError("add hardware intent requires a candidate object")
+    if payload["action"] in {"remove", "test", "read"} and not isinstance(payload.get("name"), str):
+        raise ValueError(f"{payload['action']} hardware intent requires a name")
+    return payload
+
+
 NOISE_LABELS = {
     "[BLANK_AUDIO]", "[SILENCE]", "[NO SPEECH]", "[NOISE]", "[MUSIC]",
     "(SILENCE)", "(NOISE)", "(MUSIC)", "(BOOM)", "(GUN SHOTS)",

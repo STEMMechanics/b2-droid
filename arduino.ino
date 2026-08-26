@@ -1,4 +1,5 @@
 #include <LedControl.h>
+#include <Wire.h>
 
 // LED matrix: DIN, CLK, CS, number of devices.
 LedControl matrix(11, 13, 10, 1);
@@ -23,6 +24,167 @@ const unsigned long UPDATE_WATCHDOG_MS = 900000;
 unsigned long lastMotorCommand = 0;
 unsigned long lastHostCommand = 0;
 bool motorsMoving = false;
+
+// Runtime hardware is intentionally volatile. Python's SQLite registry is the
+// source of truth and reprovisions this table after every connection.
+const byte MAX_DYNAMIC_DEVICES = 12;
+enum HardwareType { HW_NONE, HW_ULTRASONIC, HW_IR_DISTANCE, HW_HALL, HW_COMPASS,
+                    HW_MCP23008, HW_L298N, HW_SERVO, HW_PCA9685 };
+struct DynamicDevice {
+  bool used;
+  String name;
+  HardwareType type;
+  int pin1;
+  int pin2;
+  byte address;
+  unsigned long pulses;
+  int lastInput;
+};
+DynamicDevice dynamicDevices[MAX_DYNAMIC_DEVICES];
+
+// Keep custom-type declarations ahead of explicit prototypes. The Arduino
+// sketch preprocessor otherwise may generate these before the types exist.
+HardwareType hardwareType(String name);
+DynamicDevice* findDynamicDevice(String name);
+
+int protocolPin(String value) {
+  value.toUpperCase();
+  if (value.length() == 2 && value.charAt(0) == 'A' && isDigit(value.charAt(1))) {
+    int index = value.substring(1).toInt();
+    return index <= 5 ? A0 + index : -1;
+  }
+  if (value.length() >= 2 && value.charAt(0) == 'D') {
+    int pin = value.substring(1).toInt();
+    return pin >= 0 && pin <= 13 ? pin : -1;
+  }
+  // Expander/controller resources are validated and owned by their parent.
+  if (value.indexOf(":GP") > 0 || value.indexOf(":CH") > 0) return -2;
+  return -1;
+}
+
+HardwareType hardwareType(String name) {
+  if (name == "ultrasonic") return HW_ULTRASONIC;
+  if (name == "ir_distance") return HW_IR_DISTANCE;
+  if (name == "hall_sensor") return HW_HALL;
+  if (name == "compass") return HW_COMPASS;
+  if (name == "mcp23008") return HW_MCP23008;
+  if (name == "l298n") return HW_L298N;
+  if (name == "servo") return HW_SERVO;
+  if (name == "pca9685") return HW_PCA9685;
+  return HW_NONE;
+}
+
+DynamicDevice* findDynamicDevice(String name) {
+  for (byte i = 0; i < MAX_DYNAMIC_DEVICES; i++) {
+    if (dynamicDevices[i].used && dynamicDevices[i].name == name) return &dynamicDevices[i];
+  }
+  return NULL;
+}
+
+void resetDynamicHardware() {
+  for (byte i = 0; i < MAX_DYNAMIC_DEVICES; i++) {
+    if (dynamicDevices[i].used && dynamicDevices[i].pin1 >= 0) {
+      pinMode(dynamicDevices[i].pin1, INPUT);
+    }
+    if (dynamicDevices[i].used && dynamicDevices[i].pin2 >= 0) {
+      pinMode(dynamicDevices[i].pin2, INPUT);
+    }
+    dynamicDevices[i].used = false;
+    dynamicDevices[i].name = "";
+  }
+}
+
+void acknowledgeError(String code, String message) {
+  Serial.print("ERR:"); Serial.print(code); Serial.print(":"); Serial.println(message);
+}
+
+void addDynamicHardware(String body) {
+  int split = body.indexOf(':');
+  if (split <= 0) { acknowledgeError("MALFORMED", "missing device type"); return; }
+  String name = body.substring(0, split);
+  body = body.substring(split + 1);
+  split = body.indexOf(':');
+  String typeName = split < 0 ? body : body.substring(0, split);
+  String fields = split < 0 ? "" : body.substring(split + 1);
+  HardwareType type = hardwareType(typeName);
+  if (type == HW_NONE || findDynamicDevice(name) != NULL) {
+    acknowledgeError("INVALID_DEVICE", "unsupported or duplicate device"); return;
+  }
+  DynamicDevice* device = NULL;
+  for (byte i = 0; i < MAX_DYNAMIC_DEVICES; i++) {
+    if (!dynamicDevices[i].used) { device = &dynamicDevices[i]; break; }
+  }
+  if (device == NULL) { acknowledgeError("FULL", "dynamic device table full"); return; }
+  device->used = true; device->name = name; device->type = type;
+  device->pin1 = -1; device->pin2 = -1; device->address = 0; device->pulses = 0;
+  while (fields.length()) {
+    int next = fields.indexOf(':');
+    String field = next < 0 ? fields : fields.substring(0, next);
+    fields = next < 0 ? "" : fields.substring(next + 1);
+    int equals = field.indexOf('=');
+    if (equals < 1) continue;
+    String key = field.substring(0, equals);
+    String value = field.substring(equals + 1);
+    int pin = protocolPin(value);
+    if (key == "trigger" || key == "analogue" || key == "input" || key == "signal" || key == "in1") device->pin1 = pin;
+    else if (key == "echo" || key == "in2") device->pin2 = pin;
+    else if (key == "address") device->address = (byte)strtol(value.c_str(), NULL, 0);
+  }
+  if (type == HW_ULTRASONIC) { pinMode(device->pin1, OUTPUT); digitalWrite(device->pin1, LOW); pinMode(device->pin2, INPUT); }
+  else if (type == HW_IR_DISTANCE || type == HW_HALL) { pinMode(device->pin1, INPUT); device->lastInput = digitalRead(device->pin1); }
+  Serial.print("ACK:ADD:"); Serial.println(name);
+}
+
+void readDynamicHardware(String name, bool testing) {
+  DynamicDevice* device = findDynamicDevice(name);
+  if (device == NULL) { acknowledgeError("NOT_FOUND", name); return; }
+  if (device->type == HW_ULTRASONIC) {
+    digitalWrite(device->pin1, LOW); delayMicroseconds(2);
+    digitalWrite(device->pin1, HIGH); delayMicroseconds(10); digitalWrite(device->pin1, LOW);
+    unsigned long duration = pulseIn(device->pin2, HIGH, 30000UL);
+    if (duration == 0) { Serial.print("DEVICE:"); Serial.print(name); Serial.println(":UNAVAILABLE"); }
+    else { Serial.print("READ:"); Serial.print(name); Serial.print(":CM:"); Serial.println(duration * 0.0343 / 2.0, 1); }
+  } else if (device->type == HW_IR_DISTANCE) {
+    Serial.print("READ:"); Serial.print(name); Serial.print(":ADC:"); Serial.println(analogRead(device->pin1));
+  } else if (device->type == HW_HALL) {
+    Serial.print("READ:"); Serial.print(name); Serial.print(":PULSES:"); Serial.println(device->pulses);
+  } else if (device->type == HW_COMPASS || device->type == HW_MCP23008 || device->type == HW_PCA9685) {
+    Wire.beginTransmission(device->address);
+    byte error = Wire.endTransmission();
+    Serial.print("DEVICE:"); Serial.print(name); Serial.println(error == 0 ? ":OK" : ":UNAVAILABLE");
+  } else {
+    // Configuration presence can be verified without actuating motors/servos.
+    Serial.print("DEVICE:"); Serial.print(name); Serial.println(":UNVERIFIED");
+  }
+  Serial.println("ACK");
+}
+
+void handleHardwareCommand(String command) {
+  if (command == "HW:RESET") { stopMotors(); resetDynamicHardware(); Serial.println("ACK:RESET"); return; }
+  if (command == "HW:I2C_SCAN") {
+    for (byte address = 8; address <= 0x77; address++) {
+      Wire.beginTransmission(address);
+      if (Wire.endTransmission() == 0) { Serial.print("I2C:0x"); if (address < 16) Serial.print('0'); Serial.println(address, HEX); }
+    }
+    Serial.println("ACK:SCAN"); return;
+  }
+  if (command.startsWith("HW:ADD:")) { addDynamicHardware(command.substring(7)); return; }
+  if (command.startsWith("HW:REMOVE:")) {
+    DynamicDevice* device = findDynamicDevice(command.substring(10));
+    if (device == NULL) acknowledgeError("NOT_FOUND", command.substring(10));
+    else { device->used = false; device->name = ""; Serial.println("ACK:REMOVE"); }
+    return;
+  }
+  if (command.startsWith("HW:READ:")) { readDynamicHardware(command.substring(8), false); return; }
+  if (command.startsWith("HW:TEST:")) { readDynamicHardware(command.substring(8), true); return; }
+  if (command == "HW:LIST") {
+    for (byte i = 0; i < MAX_DYNAMIC_DEVICES; i++) if (dynamicDevices[i].used) {
+      Serial.print("DEVICE:"); Serial.print(dynamicDevices[i].name); Serial.println(":UNVERIFIED");
+    }
+    Serial.println("ACK:LIST"); return;
+  }
+  acknowledgeError("UNKNOWN_COMMAND", command);
+}
 
 byte happy[8] = {
   B00000000,
@@ -212,6 +374,10 @@ enum State {
   OFFLINE
 };
 
+// Arduino's sketch preprocessor cannot always place generated prototypes
+// correctly when a function parameter uses a sketch-defined enum.
+void setState(State newState);
+
 State state = IDLE;
 
 unsigned long nextBlink = 0;
@@ -383,6 +549,8 @@ void readCommands() {
   if (command.length() == 0) return;
   lastHostCommand = millis();
 
+  if (command.startsWith("HW:")) { handleHardwareCommand(command); return; }
+
   if (command == "idle") setState(IDLE);
   else if (command == "listening") setState(LISTENING);
   else if (command == "thinking") setState(THINKING);
@@ -541,6 +709,7 @@ void setup() {
 
   Serial.begin(115200);
   Serial.setTimeout(25);
+  Wire.begin();
 
   matrix.shutdown(0, false);
   matrix.setIntensity(0, 3);
@@ -553,6 +722,13 @@ void setup() {
 
 void loop() {
   readCommands();
+  for (byte i = 0; i < MAX_DYNAMIC_DEVICES; i++) {
+    if (dynamicDevices[i].used && dynamicDevices[i].type == HW_HALL) {
+      int value = digitalRead(dynamicDevices[i].pin1);
+      if (value == HIGH && dynamicDevices[i].lastInput == LOW) dynamicDevices[i].pulses++;
+      dynamicDevices[i].lastInput = value;
+    }
+  }
   updateMotorWatchdog();
   updateHostWatchdog();
   updateIdleAnimation();

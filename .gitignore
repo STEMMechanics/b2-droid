@@ -1,0 +1,88 @@
+# macOS and common desktop metadata
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+.Spotlight-V100/
+.Trashes/
+
+# Editors and IDEs
+.idea/
+.vscode/
+*.code-workspace
+*.iml
+*.ipr
+*.iws
+*~
+*.swp
+*.swo
+
+# Python bytecode, tooling, and environments
+__pycache__/
+*.py[cod]
+*$py.class
+.python-version
+.venv/
+venv/
+env/
+ENV/
+.tox/
+.nox/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.hypothesis/
+
+# Packaging and build output
+build/
+dist/
+site/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+!config/*.env.example
+*.local
+*.secret
+
+# B2 runtime state, recordings, models, and logs
+data/
+logs/
+*.log
+*.pid
+*.sqlite
+*.sqlite3
+*.db
+*.wav
+*.onnx
+*.gguf
+*.bin
+pending-ai-requests.json
+learned-calibration.json
+
+# Arduino build products
+*.elf
+*.eep
+*.hex
+*.map
+*.lst
+*.sym
+*.d
+*.o
+*.a
+
+# Test and temporary output
+.cache/
+tmp/
+temp/
+*.tmp
+*.bak

@@ -20,6 +20,7 @@ systemd -> b2-update (root, removable-media installer)
                             |-- b2.web           -> adult dashboard
                             |-- b2.remote        -> optional Slack
                             |-- b2.storage       -> SQLite transactions
+                            |-- b2.hardware      -> validated runtime hardware
                             |-- b2.vision        -> camera / YOLO detections
                             |-- serial           -> Arduino safety controller
                             |-- whisper.cpp      -> transcription
@@ -64,6 +65,9 @@ bounded movement; loss of heartbeats causes the Arduino to stop the motors.
 | `b2/motion_vision.py` | Camera-frame evidence for chassis movement |
 | `b2/config.py` | Shared application/data/config paths |
 | `b2/storage.py` | Short-lived transactional SQLite connections |
+| `b2/hardware_registry.py` | SQLite hardware inventory, capability descriptors and deterministic resource validation |
+| `b2/hardware_protocol.py` | Acknowledged line protocol for runtime Arduino configuration and readings |
+| `b2/hardware.py` | Provisioning, discovery, tests, readings and concise hardware context |
 | `b2/vision.py` | Camera ownership and object/person detection snapshots |
 
 `droid.py` remains the composition root because conversation, identity, vision,
@@ -125,3 +129,43 @@ bash -n scripts/*.sh
 
 Arduino verification remains an installer step because it needs `arduino-cli`,
 the AVR core, LedControl and attached hardware.
+
+## Dynamic hardware
+
+The Python `HardwareRegistry` is the persistent source of truth. Natural-language
+recognition in `b2.commands` produces only a candidate intent. The deterministic
+registry validates device descriptors, pin capabilities, fixed allocations,
+parents and I2C addresses before SQLite is changed or a command reaches the
+Arduino. Model text can never issue a raw serial or motor command.
+
+At startup, and again after a serial reconnection, Python sends `HW:RESET` and
+replays every enabled registry entry using acknowledged `HW:ADD` commands.
+Failure marks affected devices unavailable without stopping B2. Arduino EEPROM
+is not used. The existing motor and host watchdogs, emergency stop behaviour,
+and bounded motion controller remain independent of the dynamic device table.
+
+The Arduino Uno resource map is fixed as follows:
+
+| Resources | Use |
+|---|---|
+| D0/D1 | reserved USB serial |
+| D3, D5, D6 | fixed left L298N enable/direction |
+| D7, D8, D9 | fixed right L298N direction/enable |
+| D10, D11, D13 | fixed MAX7219 CS/data/clock |
+| D2, D4, D12 | initially free native GPIO |
+| A0-A3 | initially free analogue or digital resources |
+| A4/A5 | shared I2C SDA/SCL bus; never allocated as ordinary pins |
+
+Supported descriptors are `ultrasonic`, `ir_distance`, `hall_sensor`,
+`compass`, `mcp23008`, `l298n`, `servo`, and `pca9685`. MCP23008 pins appear as
+resources such as `mcp23008_1:GP0`; PCA9685 channels use the equivalent channel
+abstraction for future servos/PWM. Additional motor controllers may be
+described, but dynamic hardware commands cannot actuate them: motor operation
+remains behind explicit bounded commands and Arduino watchdogs.
+
+`HW:I2C_SCAN` performs real discovery on A4/A5. Python compares returned
+addresses with registered devices and reports unknown addresses without
+guessing a chip type. Ordinary GPIO and analogue devices cannot identify
+themselves; they remain configured/unverified until a functional read or test
+shows that they are responding. Registry status therefore distinguishes
+configured, detected, responding, unverified, and unavailable states.
