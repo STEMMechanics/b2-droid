@@ -1,0 +1,45 @@
+{
+  "features": [
+    {
+      "name": "motion",
+      "description": "Bounded adult-requested wheel movements with an Arduino watchdog.",
+      "actions": ["forward", "reverse", "left", "right", "turn around", "stop", "look at me"]
+    },
+    {
+      "name": "vision",
+      "description": "Local person, face and object recognition from the current camera frame."
+    },
+    {
+      "name": "speech",
+      "description": "Local microphone transcription and Piper speech output."
+    },
+    {
+      "name": "memory",
+      "description": "Persistent people, facts and reminders stored locally in SQLite."
+    },
+    {
+      "name": "emotions",
+      "description": "Bounded happiness, curiosity, loneliness and concern signals controlling expression and style."
+    },
+    {
+      "name": "dashboard",
+      "description": "Adult-only local web chat, diagnostics, vision, audio, Wi-Fi and memory interface."
+    },
+    {
+      "name": "learning",
+      "description": "Persistent bounded calibration from explicit feedback; factory safety limits always win."
+    },
+    {
+      "name": "observations",
+      "description": "Timestamped labels for people and objects B2 has seen; camera images are not retained."
+    },
+    {
+      "name": "dynamic display",
+      "description": "Python services can send validated custom 8x8 monochrome frames to the Arduino."
+    },
+    {
+      "name": "web search",
+      "description": "Optional SearXNG web search using the common skill entrypoint; available only when configured."
+    }
+  ]
+}

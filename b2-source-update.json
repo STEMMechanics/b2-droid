@@ -1,0 +1,8 @@
+{
+  "source_update_format": 1,
+  "version": "0.12.4",
+  "database_compatibility": {
+    "min": 0,
+    "max": 1
+  }
+}

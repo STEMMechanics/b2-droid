@@ -1,0 +1,9 @@
+/var/log/b2-droid/app.log {
+    weekly
+    rotate 4
+    size 5M
+    compress
+    missingok
+    notifempty
+    copytruncate
+}

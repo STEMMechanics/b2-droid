@@ -1,0 +1,24 @@
+[Unit]
+Description=B2 Droid
+After=network-online.target b2-llm.service
+Wants=network-online.target b2-llm.service
+
+[Service]
+Type=simple
+User=droid
+Group=droid
+SupplementaryGroups=audio dialout video
+EnvironmentFile=-/etc/b2-droid.env
+Environment=YOLO_CONFIG_DIR=/var/lib/b2-droid
+Environment=PYTHONUNBUFFERED=1
+WorkingDirectory=/opt/b2-droid
+ExecStart=/opt/b2-droid/.venv/bin/python -m b2.supervisor
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+StandardOutput=append:/var/log/b2-droid/app.log
+StandardError=append:/var/log/b2-droid/app.log
+
+[Install]
+WantedBy=multi-user.target
