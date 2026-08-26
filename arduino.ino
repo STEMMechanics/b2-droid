@@ -42,6 +42,11 @@ struct DynamicDevice {
 };
 DynamicDevice dynamicDevices[MAX_DYNAMIC_DEVICES];
 
+// Keep custom-type declarations ahead of explicit prototypes. The Arduino
+// sketch preprocessor otherwise may generate these before the types exist.
+HardwareType hardwareType(String name);
+DynamicDevice* findDynamicDevice(String name);
+
 int protocolPin(String value) {
   value.toUpperCase();
   if (value.length() == 2 && value.charAt(0) == 'A' && isDigit(value.charAt(1))) {
@@ -368,6 +373,10 @@ enum State {
   CUSTOM,
   OFFLINE
 };
+
+// Arduino's sketch preprocessor cannot always place generated prototypes
+// correctly when a function parameter uses a sketch-defined enum.
+void setState(State newState);
 
 State state = IDLE;
 
