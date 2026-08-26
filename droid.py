@@ -33,6 +33,7 @@ from b2.commands import (
     emotion_changes_for_request, extract_person_name, extract_wake_request,
     face_request_name, is_disengagement,
     is_ip_address_request, is_noise, obvious_followup, reply_expects_answer,
+    parse_hardware_intent,
 )
 from b2.directives import load_directives, save_override
 from b2.display import DisplayService
@@ -50,6 +51,9 @@ from b2.runtime_config import request_config, visible_config
 from b2.sounds import play_emotion_sound, play_ready_sound
 from b2.speech import SpeechService
 from b2.storage import DatabaseService
+from b2.hardware import HardwareService
+from b2.hardware_protocol import ArduinoHardwareProtocol, HardwareProtocolError
+from b2.hardware_registry import HardwareRegistry, HardwareValidationError
 from b2.skills import SkillRegistry, WebSearchSkill
 from b2.vision import VisionService
 from b2.web import start_web
@@ -315,8 +319,13 @@ MAX_MEMORIES = 50
 # Setup
 # =========================================================
 
-arduino = serial.Serial(PORT, BAUD, timeout=1)
-time.sleep(2)
+try:
+    arduino = serial.Serial(PORT, BAUD, timeout=1)
+    time.sleep(2)
+except (OSError, serial.SerialException) as error:
+    print(f"Arduino unavailable at startup: {error}")
+    arduino = serial.Serial(port=None, baudrate=BAUD, timeout=1)
+    arduino.port = PORT
 current_face_state = "starting"
 state_changed_at = time.monotonic()
 state_history = collections.deque(maxlen=12)
@@ -371,6 +380,10 @@ skill_registry.discover()
 context_registry.register("skills", skill_registry.context)
 llm_client = LLMClient(API)
 database_service = DatabaseService(DATABASE_FILE)
+hardware_registry = HardwareRegistry(database_service.connection)
+hardware_protocol = ArduinoHardwareProtocol(arduino, serial_lock)
+hardware_service = HardwareService(hardware_registry, hardware_protocol)
+context_registry.register("hardware", hardware_service.context)
 entity_repository = EntityRepository(database_service.connection)
 observation_service = None
 try:
@@ -468,9 +481,14 @@ CURIOSITY_ABSENCE_RESET = float(os.environ.get("B2_CURIOSITY_ABSENCE_RESET", "8"
 # =========================================================
 
 def send_arduino_line(command):
-    with serial_lock:
-        arduino.write(f"{command}\n".encode())
-        arduino.flush()
+    try:
+        with serial_lock:
+            arduino.write(f"{command}\n".encode())
+            arduino.flush()
+        return True
+    except (OSError, serial.SerialException) as error:
+        print(f"Arduino command unavailable ({command}): {error}")
+        return False
 
 
 def state(name):
@@ -532,6 +550,54 @@ def arduino_heartbeat_worker():
                 arduino.flush()
         except (OSError, serial.SerialException) as error:
             print(f"Arduino heartbeat unavailable: {error}")
+            try:
+                with serial_lock:
+                    if arduino.is_open:
+                        arduino.close()
+                    arduino.open()
+                    time.sleep(2)
+                result = hardware_service.provision()
+                print(f"Arduino reconnected; hardware reprovisioned: {result}")
+            except (OSError, serial.SerialException, HardwareProtocolError) as reconnect_error:
+                print(f"Arduino reconnect unavailable: {reconnect_error}")
+
+
+def execute_hardware_intent(intent, allow_changes=True):
+    """Execute only parsed, registry-validated hardware operations."""
+    action = intent["action"]
+    if action in {"add", "remove"} and not allow_changes:
+        return "Hardware changes require someone physically with me."
+    if action == "list":
+        devices = hardware_registry.list()
+        if not devices:
+            return "Only my fixed drive controller and LED matrix are configured."
+        return "Configured hardware: " + ", ".join(
+            f"{d['friendly_name']} ({d['device_type']}, {d['last_status']})" for d in devices
+        ) + "."
+    if action == "resources":
+        resources = hardware_registry.resources()
+        answer = "Free native pins: " + ", ".join(resources["free_native"]) + "."
+        children = [f"{name}: {', '.join(values)}" for name, values in resources["free_child_resources"].items()]
+        return answer + ((" Free controller resources: " + "; ".join(children) + ".") if children else "")
+    if action == "scan_i2c":
+        result = hardware_service.scan_i2c()
+        addresses = ", ".join(f"0x{address:02X}" for address in result["detected"]) or "none"
+        unknown = ", ".join(f"0x{address:02X}" for address in result["unknown"])
+        return f"I2C devices detected: {addresses}." + (f" Unknown addresses: {unknown}." if unknown else "")
+    if action == "add":
+        device = hardware_service.add(intent["candidate"])
+        assignments = ", ".join(f"{role} on {pin}" for role, pin in device["pins"].items())
+        location = assignments or (f"I2C address 0x{device['i2c_address']:02X}" if device["i2c_address"] is not None else "the I2C bus")
+        return f"{device['friendly_name']} configured on {location}. Status: {device['last_status']}."
+    if action == "remove":
+        device = hardware_service.remove(intent["name"])
+        return f"Removed {device['friendly_name']} from my hardware registry."
+    result = hardware_service.read(intent["name"], test=action == "test")
+    if result.get("kind") == "reading":
+        units = {"cm": "centimetres", "adc": "ADC", "pulses": "pulses"}
+        value = int(result["value"]) if result["value"].is_integer() else result["value"]
+        return f"{intent['name']} is responding: {value} {units.get(result['unit'], result['unit'])}."
+    return f"{intent['name']} status: {result.get('status', 'unverified')}."
 
 
 def request_shutdown(signum, frame):
@@ -1717,6 +1783,18 @@ def _process_request(text, allow_ai_actions=True):
             "My IP address is " + ", or ".join(addresses) + ". My dashboard uses port 8088."
             if addresses else "I couldn't determine my network address."
         )
+        print(f"B2: {answer}")
+        speak(answer)
+        return answer
+
+    hardware_intent = parse_hardware_intent(text)
+    if hardware_intent:
+        try:
+            answer = execute_hardware_intent(
+                hardware_intent, allow_changes=allow_ai_actions
+            )
+        except (HardwareValidationError, HardwareProtocolError, OSError) as error:
+            answer = f"I couldn't configure that hardware: {error}."
         print(f"B2: {answer}")
         speak(answer)
         return answer
@@ -3245,6 +3323,8 @@ try:
     )
 
     initialise_database()
+    provisioning = hardware_service.provision()
+    print(f"Dynamic hardware provisioned: {provisioning}")
 
     slack_client = start_slack(process_remote_request)
     web_server = start_web(

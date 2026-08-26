@@ -17,6 +17,40 @@ The Arduino stops moving after one second without a fresh command. B2 itself
 only issues short, explicit movements; this is not obstacle avoidance. Keep an
 adult and a physical power cutoff nearby when children use it.
 
+### Dynamic hardware registry
+
+B2 persists optional hardware in its existing SQLite database and validates
+every change against the fixed pin map before configuring the Arduino. Examples
+of supported spoken requests include:
+
+- “I've connected a front ultrasonic sensor with trigger on A1 and echo on A2.”
+- “I've added an MCP23008 to your I2C bus at 0x20.”
+- “What pins do you still have free?”
+- “What hardware do you currently have connected?”
+- “Scan your I2C bus.”
+- “Test your front sonar.”
+
+The fixed allocation is D0/D1 for USB serial; D3/D5/D6 and D7/D8/D9 for the
+existing L298N drive controller; D10/D11/D13 for the MAX7219; and A4/A5 for
+I2C. D2, D4, D12, and A0-A3 begin free. These assignments are never silently
+replaced. Supported descriptors currently cover ultrasonic, analogue IR
+distance, Hall sensors, compass devices, MCP23008, L298N, native servos, and
+PCA9685. MCP23008 GPIO and PCA9685 channels become named child resources.
+
+An I2C scan performs real address discovery, but an unknown address remains
+unknown until its chip/driver is specified. Ordinary GPIO and analogue devices
+cannot be identified automatically; B2 can only remember their declared wiring
+and perform a functional read/test. Status distinguishes configured,
+responding, unverified, and unavailable devices.
+
+On every startup or Arduino reconnection B2 clears only the firmware's dynamic
+table, replays the validated SQLite registry, and verifies acknowledgements.
+Unavailable devices are reported rather than crashing the droid. The Arduino
+does not use EEPROM for this configuration, and its motor/host watchdogs and
+emergency-stop behaviour remain authoritative. See
+[the architecture guide](docs/ARCHITECTURE.md#dynamic-hardware) for protocol and
+safety details.
+
 ## Ubuntu installation from USB
 
 Mount the USB drive on the EliteDesk and run the installer directly from it:
