@@ -568,6 +568,13 @@ Operational code is separated under `b2/`: configuration, directives, remote
 messaging, updates, and supervision. `droid.py` still contains the real-time
 conversation and identity pipeline so its behavior remains familiar.
 
+Emotion behaviour is also separated by responsibility. `b2/emotion_model.py`
+defines bounded scoring, named causes, explicit event changes, and passive
+rates. `b2/emotion_effects.py` defines how scores affect the face, optional
+transition sounds, and curiosity check-in timing. `b2/emotions.py` provides the
+thread-safe facade used by the coordinator. The model can discuss these factual
+scores but cannot invent new emotion effects or bypass physical safety rules.
+
 The camera and inference pipeline runs on its own daemon thread and publishes a
 small locked state snapshot to the audio/conversation loop. This prevents YOLO
 and face recognition from blocking microphone handling while giving every AI

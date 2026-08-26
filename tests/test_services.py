@@ -10,6 +10,8 @@ from types import SimpleNamespace
 from b2.context import ContextDirectory, ContextRegistry, FeatureCatalog
 from b2.display import DisplayService
 from b2.emotions import EmotionController
+from b2.emotion_effects import EmotionEffects
+from b2.emotion_model import EmotionScorer
 from b2.entities import EntityRepository
 from b2.learning import LearningStore
 from b2.llm import LLMClient
@@ -102,6 +104,38 @@ class ServiceTests(unittest.TestCase):
         emotions.adjust("concern", -1000)
         self.assertEqual(emotions.snapshot()["happiness"], 100.0)
         self.assertEqual(emotions.snapshot()["concern"], 0.0)
+
+    def test_emotion_events_have_named_bounded_causes(self):
+        scorer = EmotionScorer()
+        result = scorer.event("user_interaction")
+        self.assertEqual(result["happiness"], 63.0)
+        self.assertEqual(result["loneliness"], 0.0)
+        self.assertEqual(scorer.last_cause, "user_interaction")
+        with self.assertRaises(KeyError):
+            scorer.event("invented_by_model")
+
+    def test_emotion_passive_rates_are_owned_by_model(self):
+        scorer = EmotionScorer()
+        absent = scorer.advance(
+            elapsed=5, person_visible=False, person_identified=False,
+            inactive_seconds=100, exploration_idle_seconds=45,
+        )
+        self.assertGreater(absent["loneliness"], 5)
+        present = scorer.advance(
+            elapsed=5, person_visible=True, person_identified=True,
+            inactive_seconds=100, exploration_idle_seconds=45,
+        )
+        self.assertGreater(present["curiosity"], absent["curiosity"])
+        self.assertEqual(scorer.last_cause, "person_visible_idle")
+
+    def test_emotion_effect_thresholds_and_cooldown(self):
+        effects = EmotionEffects()
+        scores = {"happiness": 55, "curiosity": 76, "loneliness": 5, "concern": 0}
+        self.assertEqual(effects.face_for(scores, person_visible=True), "curious")
+        self.assertEqual(effects.curiosity_cooldown(scores, 600), 300)
+        scores["concern"] = 60
+        self.assertEqual(effects.face_for(scores, person_visible=True), "concerned")
+        self.assertTrue(effects.should_play_transition_sound("idle", "concerned", 20, 20))
 
     def test_motion_learns_only_from_recent_explicit_feedback(self):
         with tempfile.TemporaryDirectory() as directory:
