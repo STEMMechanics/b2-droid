@@ -5,12 +5,15 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from b2.context import ContextDirectory, ContextRegistry, FeatureCatalog
 from b2.display import DisplayService
 from b2.emotions import EmotionController
 from b2.entities import EntityRepository
 from b2.learning import LearningStore
+from b2.llm import LLMClient
+from b2.llm_routes import LLMRouteStore
 from b2.motion import MotionController
 from b2.observations import ObservationService
 from b2.skills import SkillRegistry, SkillResult
@@ -21,6 +24,52 @@ from b2.web import PAGE
 
 
 class ServiceTests(unittest.TestCase):
+    def test_llm_routes_default_to_local_and_redact_secrets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = LLMRouteStore(Path(directory) / "llm-connections.json")
+            default = store.snapshot()
+            self.assertEqual(default["connections"][0]["id"], "local-ai")
+            self.assertNotIn("api_key", default["connections"][0])
+            store.replace({"connections": [{
+                "id": "external", "label": "External", "model": "openai/gpt-5",
+                "api_base": "https://api.openai.com/v1", "api_key": "secret",
+                "enabled": True, "priority": 0, "timeout": 10,
+            }, {
+                "id": "local-ai", "label": "Local", "model": "openai/local-ai",
+                "api_base": "http://127.0.0.1:8080/v1", "api_key": "local",
+                "enabled": True, "priority": 10, "timeout": 60,
+            }]})
+            snapshot = store.snapshot()
+            self.assertEqual([item["id"] for item in snapshot["connections"]], ["external", "local-ai"])
+            self.assertNotIn("secret", json.dumps(snapshot))
+            self.assertEqual((Path(directory) / "llm-connections.json").stat().st_mode & 0o777, 0o600)
+
+    def test_llm_routes_fall_back_in_priority_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = LLMRouteStore(Path(directory) / "llm-connections.json")
+            store.replace({"connections": [{
+                "id": "external", "model": "openai/remote", "api_key": "bad",
+                "enabled": True, "priority": 0, "timeout": 5,
+            }, {
+                "id": "local-ai", "model": "openai/local-ai",
+                "api_base": "http://127.0.0.1:8080/v1", "api_key": "local",
+                "enabled": True, "priority": 10, "timeout": 20,
+            }]})
+            calls = []
+
+            def completion(**kwargs):
+                calls.append(kwargs["model"])
+                if kwargs["model"] == "openai/remote":
+                    raise RuntimeError("offline")
+                return SimpleNamespace(choices=[SimpleNamespace(
+                    message=SimpleNamespace(content="local answer")
+                )])
+
+            client = LLMClient("unused", route_store=store, completion_func=completion)
+            self.assertEqual(client.chat([{"role": "user", "content": "hello"}]), "local answer")
+            self.assertEqual(calls, ["openai/remote", "openai/local-ai"])
+            self.assertEqual(client.last_backend, "local-ai")
+
     def test_context_registry_isolates_failed_provider(self):
         registry = ContextRegistry()
         registry.register("working", lambda: {"value": 1})
@@ -395,6 +444,7 @@ class ServiceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             _validate("B2_AUDIO_DEVICE", "../../etc/passwd")
         self.assertIn(b"/api/audio/devices", PAGE)
+        self.assertIn(b"/api/llm/routes", PAGE)
         self.assertNotIn(b"B2_WEB_PASSWORD", PAGE)
 
 

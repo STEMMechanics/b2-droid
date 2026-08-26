@@ -105,6 +105,25 @@ systemctl status b2-llm --no-pager
 journalctl -u b2-llm -n 100 --no-pager
 curl http://127.0.0.1:8080/health
 ```
+
+### External AI with local fallback
+
+B2 uses the LiteLLM Python SDK to support an ordered list of model connections.
+Open **AI Connections** in the adult dashboard to add LiteLLM-supported
+providers, enable or disable them, and set priority and timeout values. Lower
+numbers run first. A failed or timed-out request moves to the next connection.
+
+The initial configuration contains only `local-ai`, backed by B2's existing
+llama.cpp server. To prefer an external service while retaining offline
+operation, add the external connection at priority 0 and leave `local-ai`
+enabled at a larger priority such as 10. API keys are stored in
+`/var/lib/b2-droid/llm-connections.json` with mode 0600 and are never returned
+by the dashboard API. Saving a blank key preserves the stored value.
+
+External providers receive the prompt and its concise live context. Adults
+should consider identity, memory, observation, and location privacy before
+enabling one. Hardware validation, motor control, watchdogs, and other safety
+decisions remain local regardless of which model answers.
 Face recognition and YOLO object recognition are installed by default. Install
 optional voice identification or Slack extras inside the installed environment:
 
