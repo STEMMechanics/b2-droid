@@ -43,7 +43,9 @@ bounded movement; loss of heartbeats causes the Arduino to stop the motors.
 | `b2/audio_capture.py` | ALSA transport, capture windows and WAV helpers |
 | `b2/commands.py` | Wake, noise, movement, emotion and intent parsing |
 | `b2/context.py` | Context-provider registry, feature catalog and drop-in fragments |
-| `b2/emotions.py` | Thread-safe bounded emotion scores and face selection |
+| `b2/emotion_model.py` | Bounded emotion scores, named causes, event deltas and passive rates |
+| `b2/emotion_effects.py` | Face thresholds, sound transitions and curiosity timing effects |
+| `b2/emotions.py` | Stable facade composing emotion scoring and effects |
 | `b2/learning.py` | Persistent learned calibration under factory safety limits |
 | `b2/llm.py` | One observable OpenAI-compatible inference transport |
 | `b2/motion.py` | Bounded motion execution and explicit-feedback learning |
@@ -118,6 +120,21 @@ Domain-specific face/voice recognition and reminder repositories remain wired
 by the composition root because they share the live identity transaction. Their
 storage transport, parsing, external inference, emotions, motion, audio,
 networking, UI, update, logging and context responsibilities are isolated.
+
+## Emotion domain
+
+Emotion is deterministic internal state rather than model-authored behaviour.
+`EmotionScorer` owns the four bounded scores and the named causes that change
+them: user interaction, finding a person, satisfying exploration, inference
+failure, explicit direction, and passive visible/absent-person rates.
+`EmotionEffects` separately maps scores to face thresholds, transition-sound
+eligibility, and the shorter high-curiosity check-in cooldown. The facade
+publishes scores, last cause, thresholds, and effects as concise context.
+
+The language model may describe supplied emotion state or recognize a tightly
+bounded explicit request, but it cannot create emotion names, thresholds,
+causes, or effects. Physical outputs remain performed by their existing face,
+sound, speech, and bounded-motion services.
 
 ## Verification
 
