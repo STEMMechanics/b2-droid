@@ -42,6 +42,7 @@ from b2.emotions import EmotionController
 from b2.entities import EntityRepository
 from b2.learning import LearningStore
 from b2.llm import LLMClient
+from b2.llm_routes import LLMRouteStore
 from b2.motion import MotionController
 from b2.motion_vision import CameraMotionVerifier
 from b2.network import local_ip_addresses, wifi_connect, wifi_scan
@@ -376,7 +377,15 @@ skill_registry = SkillRegistry()
 skill_registry.register(WebSearchSkill(os.environ.get("B2_WEB_SEARCH_URL")))
 skill_registry.discover()
 context_registry.register("skills", skill_registry.context)
-llm_client = LLMClient(API)
+llm_route_store = LLMRouteStore(DATA_DIR / "llm-connections.json")
+llm_client = LLMClient(API, route_store=llm_route_store)
+context_registry.register("language_model", lambda: {
+    "active_backend": llm_client.last_backend,
+    "priority": [
+        item["id"] for item in llm_route_store.snapshot()["connections"]
+        if item["enabled"]
+    ],
+})
 database_service = DatabaseService(DATABASE_FILE)
 hardware_registry = HardwareRegistry(database_service.connection)
 hardware_protocol = ArduinoHardwareProtocol(arduino, serial_lock)
@@ -1985,6 +1994,7 @@ def diagnostic_status():
         "state_age_seconds": round(time.monotonic() - state_changed_at, 1),
         "recent_states": list(state_history),
         "arduino": "connected" if arduino.is_open else "disconnected",
+        "language_model_backend": llm_client.last_backend,
         "person_visible": snapshot.get("person_visible", False),
         "person_visible_raw": snapshot.get("person_visible_raw", False),
         "person_last_seen_age_seconds": snapshot.get(
@@ -3315,6 +3325,7 @@ try:
         wifi_scan, wifi_connect, camera_jpeg,
         audio_settings, update_audio_settings,
         discover_audio_devices, visible_config, request_config,
+        llm_route_store.snapshot, llm_route_store.replace,
     )
 
     vision_thread = threading.Thread(
