@@ -35,6 +35,15 @@ only approved environment keys, and restarts the application service.
 The Arduino owns the motor timeout and LED animation. Ubuntu may request only a
 bounded movement; loss of heartbeats causes the Arduino to stop the motors.
 
+Language-model inference is routed in-process through the LiteLLM SDK. The
+dashboard-managed connection list is read for each request, so priority changes
+do not require a restart. `local-ai` points to the managed llama.cpp service and
+is the factory default. Enabled routes are tried by ascending priority and then
+fall back on provider errors or timeouts. API keys are write-only through the
+dashboard and the route file is mode 0600. Model routing changes language
+interpretation only: deterministic commands and safety validation do not move
+into the model layer.
+
 ## Python modules
 
 | Module | Responsibility |
@@ -43,9 +52,12 @@ bounded movement; loss of heartbeats causes the Arduino to stop the motors.
 | `b2/audio_capture.py` | ALSA transport, capture windows and WAV helpers |
 | `b2/commands.py` | Wake, noise, movement, emotion and intent parsing |
 | `b2/context.py` | Context-provider registry, feature catalog and drop-in fragments |
-| `b2/emotions.py` | Thread-safe bounded emotion scores and face selection |
+| `b2/emotion_model.py` | Bounded emotion scores, named causes, event deltas and passive rates |
+| `b2/emotion_effects.py` | Face thresholds, sound transitions and curiosity timing effects |
+| `b2/emotions.py` | Stable facade composing emotion scoring and effects |
 | `b2/learning.py` | Persistent learned calibration under factory safety limits |
 | `b2/llm.py` | One observable OpenAI-compatible inference transport |
+| `b2/llm_routes.py` | Validated LiteLLM connections, secret redaction and ordered fallback |
 | `b2/motion.py` | Bounded motion execution and explicit-feedback learning |
 | `b2/network.py` | Local IP discovery and NetworkManager operations |
 | `b2/sounds.py` | Generated startup and emotional motifs |
@@ -118,6 +130,21 @@ Domain-specific face/voice recognition and reminder repositories remain wired
 by the composition root because they share the live identity transaction. Their
 storage transport, parsing, external inference, emotions, motion, audio,
 networking, UI, update, logging and context responsibilities are isolated.
+
+## Emotion domain
+
+Emotion is deterministic internal state rather than model-authored behaviour.
+`EmotionScorer` owns the four bounded scores and the named causes that change
+them: user interaction, finding a person, satisfying exploration, inference
+failure, explicit direction, and passive visible/absent-person rates.
+`EmotionEffects` separately maps scores to face thresholds, transition-sound
+eligibility, and the shorter high-curiosity check-in cooldown. The facade
+publishes scores, last cause, thresholds, and effects as concise context.
+
+The language model may describe supplied emotion state or recognize a tightly
+bounded explicit request, but it cannot create emotion names, thresholds,
+causes, or effects. Physical outputs remain performed by their existing face,
+sound, speech, and bounded-motion services.
 
 ## Verification
 

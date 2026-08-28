@@ -1,42 +1,46 @@
-"""Thread-safe bounded emotional state and face selection."""
+"""Facade for emotion scoring, causes, and deterministic effects."""
 
-import threading
+from .emotion_effects import EmotionEffects, FACES
+from .emotion_model import EmotionScorer
 
 
 class EmotionController:
-    FACES = {"idle", "curious", "lonely", "excited", "concerned"}
+    FACES = FACES
 
     def __init__(self):
-        self.lock = threading.RLock()
-        self.scores = {
-            "happiness": 55.0, "curiosity": 50.0,
-            "loneliness": 5.0, "concern": 0.0,
-        }
+        self.scorer = EmotionScorer()
+        self.effects = EmotionEffects()
+        # Compatibility attributes for callers that coordinate using the lock.
+        self.lock = self.scorer.lock
+        self.scores = self.scorer.scores
 
     def adjust(self, name, amount):
-        with self.lock:
-            if name not in self.scores:
-                raise KeyError(f"Unknown emotion: {name}")
-            self.scores[name] = max(0.0, min(100.0, self.scores[name] + amount))
-            return self.scores[name]
+        return self.scorer.adjust(name, amount)
 
     def apply(self, changes):
-        return {name: self.adjust(name, amount) for name, amount in changes}
+        return self.scorer.apply(dict(changes))
+
+    def event(self, name):
+        return self.scorer.event(name)
+
+    def advance(self, **conditions):
+        return self.scorer.advance(**conditions)
 
     def snapshot(self, rounded=False):
-        with self.lock:
-            if rounded:
-                return {name: round(score, 1) for name, score in self.scores.items()}
-            return dict(self.scores)
+        return self.scorer.snapshot(rounded=rounded)
 
     @staticmethod
     def face_for(scores, visible):
-        if scores["concern"] >= 60:
-            return "concerned"
-        if scores["loneliness"] >= 65 and not visible:
-            return "lonely"
-        if scores["curiosity"] >= 62:
-            return "curious"
-        if scores["happiness"] >= 72:
-            return "excited"
-        return "idle"
+        return EmotionEffects.face_for(scores, visible)
+
+    def face(self, visible):
+        return self.effects.face_for(self.snapshot(), visible)
+
+    def should_play_transition_sound(self, previous, next_face, elapsed, cooldown):
+        return self.effects.should_play_transition_sound(previous, next_face, elapsed, cooldown)
+
+    def curiosity_cooldown(self, normal_cooldown):
+        return self.effects.curiosity_cooldown(self.snapshot(), normal_cooldown)
+
+    def context(self):
+        return self.effects.describe(self.snapshot(), self.scorer.last_cause)

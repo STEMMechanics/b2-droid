@@ -5,12 +5,17 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from b2.context import ContextDirectory, ContextRegistry, FeatureCatalog
 from b2.display import DisplayService
 from b2.emotions import EmotionController
+from b2.emotion_effects import EmotionEffects
+from b2.emotion_model import EmotionScorer
 from b2.entities import EntityRepository
 from b2.learning import LearningStore
+from b2.llm import LLMClient
+from b2.llm_routes import LLMRouteStore
 from b2.motion import MotionController
 from b2.observations import ObservationService
 from b2.skills import SkillRegistry, SkillResult
@@ -21,6 +26,52 @@ from b2.web import PAGE
 
 
 class ServiceTests(unittest.TestCase):
+    def test_llm_routes_default_to_local_and_redact_secrets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = LLMRouteStore(Path(directory) / "llm-connections.json")
+            default = store.snapshot()
+            self.assertEqual(default["connections"][0]["id"], "local-ai")
+            self.assertNotIn("api_key", default["connections"][0])
+            store.replace({"connections": [{
+                "id": "external", "label": "External", "model": "openai/gpt-5",
+                "api_base": "https://api.openai.com/v1", "api_key": "secret",
+                "enabled": True, "priority": 0, "timeout": 10,
+            }, {
+                "id": "local-ai", "label": "Local", "model": "openai/local-ai",
+                "api_base": "http://127.0.0.1:8080/v1", "api_key": "local",
+                "enabled": True, "priority": 10, "timeout": 60,
+            }]})
+            snapshot = store.snapshot()
+            self.assertEqual([item["id"] for item in snapshot["connections"]], ["external", "local-ai"])
+            self.assertNotIn("secret", json.dumps(snapshot))
+            self.assertEqual((Path(directory) / "llm-connections.json").stat().st_mode & 0o777, 0o600)
+
+    def test_llm_routes_fall_back_in_priority_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = LLMRouteStore(Path(directory) / "llm-connections.json")
+            store.replace({"connections": [{
+                "id": "external", "model": "openai/remote", "api_key": "bad",
+                "enabled": True, "priority": 0, "timeout": 5,
+            }, {
+                "id": "local-ai", "model": "openai/local-ai",
+                "api_base": "http://127.0.0.1:8080/v1", "api_key": "local",
+                "enabled": True, "priority": 10, "timeout": 20,
+            }]})
+            calls = []
+
+            def completion(**kwargs):
+                calls.append(kwargs["model"])
+                if kwargs["model"] == "openai/remote":
+                    raise RuntimeError("offline")
+                return SimpleNamespace(choices=[SimpleNamespace(
+                    message=SimpleNamespace(content="local answer")
+                )])
+
+            client = LLMClient("unused", route_store=store, completion_func=completion)
+            self.assertEqual(client.chat([{"role": "user", "content": "hello"}]), "local answer")
+            self.assertEqual(calls, ["openai/remote", "openai/local-ai"])
+            self.assertEqual(client.last_backend, "local-ai")
+
     def test_context_registry_isolates_failed_provider(self):
         registry = ContextRegistry()
         registry.register("working", lambda: {"value": 1})
@@ -53,6 +104,38 @@ class ServiceTests(unittest.TestCase):
         emotions.adjust("concern", -1000)
         self.assertEqual(emotions.snapshot()["happiness"], 100.0)
         self.assertEqual(emotions.snapshot()["concern"], 0.0)
+
+    def test_emotion_events_have_named_bounded_causes(self):
+        scorer = EmotionScorer()
+        result = scorer.event("user_interaction")
+        self.assertEqual(result["happiness"], 63.0)
+        self.assertEqual(result["loneliness"], 0.0)
+        self.assertEqual(scorer.last_cause, "user_interaction")
+        with self.assertRaises(KeyError):
+            scorer.event("invented_by_model")
+
+    def test_emotion_passive_rates_are_owned_by_model(self):
+        scorer = EmotionScorer()
+        absent = scorer.advance(
+            elapsed=5, person_visible=False, person_identified=False,
+            inactive_seconds=100, exploration_idle_seconds=45,
+        )
+        self.assertGreater(absent["loneliness"], 5)
+        present = scorer.advance(
+            elapsed=5, person_visible=True, person_identified=True,
+            inactive_seconds=100, exploration_idle_seconds=45,
+        )
+        self.assertGreater(present["curiosity"], absent["curiosity"])
+        self.assertEqual(scorer.last_cause, "person_visible_idle")
+
+    def test_emotion_effect_thresholds_and_cooldown(self):
+        effects = EmotionEffects()
+        scores = {"happiness": 55, "curiosity": 76, "loneliness": 5, "concern": 0}
+        self.assertEqual(effects.face_for(scores, person_visible=True), "curious")
+        self.assertEqual(effects.curiosity_cooldown(scores, 600), 300)
+        scores["concern"] = 60
+        self.assertEqual(effects.face_for(scores, person_visible=True), "concerned")
+        self.assertTrue(effects.should_play_transition_sound("idle", "concerned", 20, 20))
 
     def test_motion_learns_only_from_recent_explicit_feedback(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -395,6 +478,7 @@ class ServiceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             _validate("B2_AUDIO_DEVICE", "../../etc/passwd")
         self.assertIn(b"/api/audio/devices", PAGE)
+        self.assertIn(b"/api/llm/routes", PAGE)
         self.assertNotIn(b"B2_WEB_PASSWORD", PAGE)
 
 

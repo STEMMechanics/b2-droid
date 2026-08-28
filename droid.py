@@ -42,6 +42,7 @@ from b2.emotions import EmotionController
 from b2.entities import EntityRepository
 from b2.learning import LearningStore
 from b2.llm import LLMClient
+from b2.llm_routes import LLMRouteStore
 from b2.motion import MotionController
 from b2.motion_vision import CameraMotionVerifier
 from b2.network import local_ip_addresses, wifi_connect, wifi_scan
@@ -352,8 +353,6 @@ exploration_until = 0.0
 exploration_direction = 1
 
 emotions = EmotionController()
-emotion_lock = emotions.lock
-emotion_scores = emotions.scores
 last_emotion_update = time.monotonic()
 last_emotion_face = None
 last_emotion_sound = 0.0
@@ -378,7 +377,15 @@ skill_registry = SkillRegistry()
 skill_registry.register(WebSearchSkill(os.environ.get("B2_WEB_SEARCH_URL")))
 skill_registry.discover()
 context_registry.register("skills", skill_registry.context)
-llm_client = LLMClient(API)
+llm_route_store = LLMRouteStore(DATA_DIR / "llm-connections.json")
+llm_client = LLMClient(API, route_store=llm_route_store)
+context_registry.register("language_model", lambda: {
+    "active_backend": llm_client.last_backend,
+    "priority": [
+        item["id"] for item in llm_route_store.snapshot()["connections"]
+        if item["enabled"]
+    ],
+})
 database_service = DatabaseService(DATABASE_FILE)
 hardware_registry = HardwareRegistry(database_service.connection)
 hardware_protocol = ArduinoHardwareProtocol(arduino, serial_lock)
@@ -539,7 +546,7 @@ motion_controller = MotionController(
     stall_cooldown=float(os.environ.get("B2_MOTOR_STALL_COOLDOWN", "30")),
 )
 context_registry.register("motion_service", motion_controller.context)
-context_registry.register("emotion_service", lambda: emotions.snapshot(rounded=True))
+context_registry.register("emotion_service", emotions.context)
 
 
 def arduino_heartbeat_worker():
@@ -615,10 +622,7 @@ def note_user_interaction():
     person_focus_until = max(
         person_focus_until, last_user_interaction + PERSON_FOCUS_HOLD_SECONDS
     )
-    adjust_emotion("happiness", 8)
-    adjust_emotion("curiosity", -12)
-    adjust_emotion("loneliness", -25)
-    adjust_emotion("concern", -8)
+    emotions.event("user_interaction")
 
 
 def update_emotional_state():
@@ -632,19 +636,13 @@ def update_emotional_state():
         visible = vision_state.get("person_visible", False)
     person_name, _ = current_identity()
     inactive = now_mono - last_user_interaction
-    with emotion_lock:
-        if visible:
-            emotion_scores["loneliness"] -= 0.20 * elapsed
-            emotion_scores["happiness"] += (0.05 if person_name else 0.01) * elapsed
-            if inactive >= EXPLORATION_IDLE_SECONDS:
-                emotion_scores["curiosity"] += 0.10 * elapsed
-        else:
-            emotion_scores["loneliness"] += 0.035 * elapsed
-            emotion_scores["curiosity"] += 0.025 * elapsed
-            emotion_scores["happiness"] -= 0.015 * elapsed
-        for name in emotion_scores:
-            emotion_scores[name] = max(0.0, min(100.0, emotion_scores[name]))
-        snapshot = dict(emotion_scores)
+    snapshot = emotions.advance(
+        elapsed=elapsed,
+        person_visible=visible,
+        person_identified=bool(person_name),
+        inactive_seconds=inactive,
+        exploration_idle_seconds=EXPLORATION_IDLE_SECONDS,
+    )
 
     face = emotions.face_for(snapshot, visible)
     emotion_faces = emotions.FACES
@@ -655,7 +653,11 @@ def update_emotional_state():
         if (
             previous_face is not None
             and previous_face != face
-            and now_mono - last_emotion_sound >= EMOTION_SOUND_COOLDOWN
+            and emotions.should_play_transition_sound(
+                previous_face, face,
+                now_mono - last_emotion_sound,
+                EMOTION_SOUND_COOLDOWN,
+            )
             and play_emotion_sound(face)
         ):
             last_emotion_sound = time.monotonic()
@@ -1079,10 +1081,9 @@ def get_context():
         if identity_confidence is not None else "unknown"
     )
     audio = audio_settings()
-    with emotion_lock:
-        feeling_text = ", ".join(
-            f"{name} {score:.0f}/100" for name, score in emotion_scores.items()
-        )
+    feeling_text = ", ".join(
+        f"{name} {score:.0f}/100" for name, score in emotions.snapshot().items()
+    )
 
     core_context = f"""
 Current real-world information:
@@ -1598,8 +1599,7 @@ def execute_drive_command(command):
 def apply_emotion_request(text):
     """Apply explicit emotional direction while leaving the reply to B2's AI."""
     changes = emotion_changes_for_request(text)
-    for name, amount in changes:
-        adjust_emotion(name, amount)
+    emotions.apply(changes)
     if changes:
         print(
             "Explicit emotion direction: "
@@ -1940,7 +1940,7 @@ def _process_request(text, allow_ai_actions=True):
 
     except Exception as error:
         print(f"Error: {error}")
-        adjust_emotion("concern", 15)
+        emotions.event("inference_failure")
         queue_ai_request(text, allow_actions=allow_ai_actions)
         if isinstance(error, requests.Timeout):
             answer = "My thinking is taking too long. I've saved that question."
@@ -1994,6 +1994,7 @@ def diagnostic_status():
         "state_age_seconds": round(time.monotonic() - state_changed_at, 1),
         "recent_states": list(state_history),
         "arduino": "connected" if arduino.is_open else "disconnected",
+        "language_model_backend": llm_client.last_backend,
         "person_visible": snapshot.get("person_visible", False),
         "person_visible_raw": snapshot.get("person_visible_raw", False),
         "person_last_seen_age_seconds": snapshot.get(
@@ -2082,9 +2083,7 @@ def maybe_track_person(offset_x):
         voice_search_until = 0.0
         if found_after_voice_search:
             person_focus_until = now_mono + PERSON_FOCUS_HOLD_SECONDS
-            adjust_emotion("happiness", 8)
-            adjust_emotion("curiosity", 10)
-            adjust_emotion("loneliness", -20)
+            emotions.event("person_found")
             print(
                 "Person found after voice search; holding visual attention "
                 f"for {PERSON_FOCUS_HOLD_SECONDS:.0f}s."
@@ -2123,7 +2122,7 @@ def maybe_track_person(offset_x):
                 exploration_direction *= -1
                 last_exploration = time.monotonic()
                 exploration_until = last_exploration + 8
-                adjust_emotion("curiosity", -8)
+                emotions.event("exploration_satisfied")
             finally:
                 motor_lock.release()
             return
@@ -3147,10 +3146,9 @@ def generate_curiosity_prompt(
 
     event_type = "arrival" if newly_arrived else "idle_check_in"
     recent = recent_curiosity_prompts()
-    with emotion_lock:
-        feelings = ", ".join(
-            f"{name}={score:.0f}" for name, score in emotion_scores.items()
-        )
+    feelings = ", ".join(
+        f"{name}={score:.0f}" for name, score in emotions.snapshot().items()
+    )
     needs_name = not person_name and not known_names
     prompt = f"""
 You are choosing one spontaneous line for B2, a curious child-friendly physical droid.
@@ -3258,12 +3256,7 @@ def maybe_announce_curiosity():
         session_first_encounter = curiosity_last_greeting == 0.0
         curiosity_person_present = True
 
-        with emotion_lock:
-            curiosity_score = emotion_scores["curiosity"]
-        effective_cooldown = (
-            max(90.0, CURIOSITY_COOLDOWN / 2)
-            if curiosity_score >= 75 else CURIOSITY_COOLDOWN
-        )
+        effective_cooldown = emotions.curiosity_cooldown(CURIOSITY_COOLDOWN)
         if now_mono - curiosity_last_greeting < effective_cooldown:
             return False
         curiosity_last_greeting = now_mono
@@ -3332,6 +3325,7 @@ try:
         wifi_scan, wifi_connect, camera_jpeg,
         audio_settings, update_audio_settings,
         discover_audio_devices, visible_config, request_config,
+        llm_route_store.snapshot, llm_route_store.replace,
     )
 
     vision_thread = threading.Thread(

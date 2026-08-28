@@ -20,6 +20,18 @@ PAGE = '''<!doctype html>
 <section id="wifi" class="panel"><div class="hero-row"><div><p class="eyebrow" style="color:var(--green)">Network link</p><h3>Wi-Fi connection</h3><p>Help B2 find and join a nearby network.</p></div></div><div class="card" style="--card-accent:var(--green)"><div class="title-with-icon"><div class="section-icon"><i class="fa-solid fa-wifi"></i></div><div><h2>Available networks</h2><p>Scan, select and connect securely</p></div></div><form id="wf" class="form-grid"><label class="field">Network<select id="ssid"></select></label><label class="field">Password<input id="pass" type="password" placeholder="Network password"></label><div class="actions field full"><button class="btn"><i class="fa-solid fa-link"></i> Connect</button><button type="button" class="btn secondary" onclick="scan()"><i class="fa-solid fa-arrows-rotate"></i> Scan again</button></div></form><pre id="wr"></pre></div></section></main></div>
 <script>const $=s=>document.querySelector(s),esc=s=>{let d=document.createElement('div');d.textContent=s;return d.innerHTML};function toggleMenu(){document.getElementById('sidebar').classList.toggle('open')}function show(id,button){document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'));document.getElementById(id).classList.add('active');document.querySelectorAll('.nav button').forEach(x=>x.classList.toggle('active',x.dataset.panel===id));document.getElementById('sidebar').classList.remove('open');window.scrollTo({top:0,behavior:'smooth'})}async function status(){try{let r=await fetch('/api/status'),j=await r.json(),state=j.state||'unknown';$('#stateBadge').textContent=state;$('#topState').textContent=state;$('#status').textContent=JSON.stringify(j,null,2)}catch(e){$('#stateBadge').textContent='reconnecting';$('#topState').textContent='reconnecting'}}async function live(){let r=await fetch('/api/logs/tail');if(r.ok){let p=$('#liveLog'),nearBottom=p.scrollHeight-p.scrollTop-p.clientHeight<40,follow=$('#followLogs').checked&&(nearBottom||!p.textContent);p.textContent=await r.text();if(follow)p.scrollTop=p.scrollHeight}$('#camera').src='/api/camera.jpg?t='+Date.now()}async function sessions(){let s=$('#sessions'),selected=s.value,r=await fetch('/api/sessions'),j=await r.json(),names=j.sessions||[];s.innerHTML=names.map(x=>`<option>${esc(x)}</option>`).join('');if(names.includes(selected))s.value=selected}function downloadSession(){let n=$('#sessions').value;if(n)location.href='/api/session?name='+encodeURIComponent(n)}async function memory(){let r=await fetch('/api/memory');$('#mem').textContent=JSON.stringify(await r.json(),null,2)}async function audioSettings(){let r=await fetch('/api/audio'),j=await r.json();$('#volume').value=j.volume;$('#volumeValue').value=j.volume;$('#automaticVolume').checked=!!j.automatic;$('#audioStatus').textContent=JSON.stringify(j,null,2);await audioDevices()}function deviceOptions(items,current,recommended){return (items||[]).map(x=>`<option value="${esc(x.device)}" ${(x.device===current||x.numeric_device===current)?'selected':''}>${esc(x.label)}${x.device===recommended?' (recommended)':''}</option>`).join('')}async function audioDevices(){let [dr,cr]=await Promise.all([fetch('/api/audio/devices'),fetch('/api/config')]),d=await dr.json(),c=await cr.json(),s=c.settings||{};$('#captureDevice').innerHTML=deviceOptions(d.capture,s.B2_AUDIO_DEVICE,d.recommended_capture);$('#playbackDevice').innerHTML=deviceOptions(d.playback,s.B2_OUTPUT_DEVICE,d.recommended_playback);$('#speechThreshold').value=s.B2_MIN_SPEECH_THRESHOLD||100;$('#deviceStatus').textContent=JSON.stringify({recommended_capture:d.recommended_capture,recommended_playback:d.recommended_playback,last_result:c.last_result},null,2)}async function scan(){let r=await fetch('/api/wifi'),j=await r.json();$('#ssid').innerHTML=(j.networks||[]).map(x=>`<option>${esc(x)}</option>`).join('');$('#wr').textContent=j.error||''}$('#followLogs').onchange=e=>{if(e.target.checked){let p=$('#liveLog');p.scrollTop=p.scrollHeight}};$('#cf').onsubmit=async e=>{e.preventDefault();let t=$('#msg').value.trim();if(!t)return;$('#msg').value='';$('#chat').innerHTML+=`<p class="me">You: ${esc(t)}</p>`;let r=await fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:t})}),j=await r.json();$('#chat').innerHTML+=`<p class="b2">B2: ${esc(j.reply||j.error||'No reply')}</p>`;$('#chat').scrollTop=$('#chat').scrollHeight};$('#af').onsubmit=async e=>{e.preventDefault();let r=await fetch('/api/audio',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({volume:Number($('#volume').value),automatic:$('#automaticVolume').checked})}),j=await r.json();$('#audioStatus').textContent=JSON.stringify(j,null,2)};$('#deviceForm').onsubmit=async e=>{e.preventDefault();let settings={B2_AUDIO_DEVICE:$('#captureDevice').value,B2_OUTPUT_DEVICE:$('#playbackDevice').value,B2_MIN_SPEECH_THRESHOLD:Number($('#speechThreshold').value)},r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({settings})}),j=await r.json();$('#deviceStatus').textContent=JSON.stringify(j,null,2)};$('#wf').onsubmit=async e=>{e.preventDefault();let r=await fetch('/api/wifi',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ssid:$('#ssid').value,password:$('#pass').value})});$('#pass').value='';$('#wr').textContent=JSON.stringify(await r.json(),null,2)};status();live();sessions();memory();audioSettings();scan();setInterval(status,500);setInterval(live,1000);setInterval(sessions,10000)</script></body></html>'''.encode()
 
+PAGE = PAGE.replace(
+    b'<button data-panel="wifi"',
+    b'<button data-panel="llmPanel" onclick="show(\'llmPanel\',this);llmRoutes()"><i class="fa-solid fa-network-wired"></i><span>AI connections</span></button><button data-panel="wifi"',
+).replace(
+    b'<section id="wifi"',
+    b'''<section id="llmPanel" class="panel"><div class="hero-row"><div><p class="eyebrow" style="color:var(--cyan)">Model routing</p><h3>AI connections</h3><p>Set connection priority and fall back automatically when a provider is unavailable.</p></div></div><div class="card" style="--card-accent:var(--cyan)"><div id="llmRoutes"></div><div class="actions"><button class="btn secondary" onclick="addLlmRoute()"><i class="fa-solid fa-plus"></i> Add connection</button><button class="btn" onclick="saveLlmRoutes()"><i class="fa-solid fa-floppy-disk"></i> Save priority</button></div><pre id="llmStatus"></pre></div></section>
+<section id="wifi"''',
+).replace(
+    b'</style>',
+    b'.llm-route{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;padding:18px;margin:14px 0;border:1px solid #2b3d4b;border-radius:12px;background:#081018}.llm-route .actions{grid-column:1/-1;margin-top:0}@media(max-width:767px){.llm-route{grid-template-columns:1fr}}</style>',
+)
+
 PAGE = PAGE.replace(b"</body>", b'''<script>
 async function configSettings(){
   let r=await fetch('/api/config'),j=await r.json(),s=j.settings||{};
@@ -38,6 +50,26 @@ $('#configForm').onsubmit=async e=>{
   let r=await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({settings})});
   $('#configStatus').textContent=JSON.stringify(await r.json(),null,2);
 };
+let llmConnections=[];
+function renderLlmRoutes(){
+  $('#llmRoutes').innerHTML=llmConnections.map((r,i)=>`<div class="llm-route">
+    <label class="field">Enabled <input data-k="enabled" data-i="${i}" type="checkbox" ${r.enabled?'checked':''}></label>
+    <label class="field">Priority <input data-k="priority" data-i="${i}" type="number" min="0" max="999" value="${Number(r.priority)}"></label>
+    <label class="field">ID <input data-k="id" data-i="${i}" value="${esc(r.id||'')}"></label>
+    <label class="field">Label <input data-k="label" data-i="${i}" value="${esc(r.label||'')}"></label>
+    <label class="field">LiteLLM model <input data-k="model" data-i="${i}" value="${esc(r.model||'')}" placeholder="openai/gpt-5"></label>
+    <label class="field">API base <input data-k="api_base" data-i="${i}" value="${esc(r.api_base||'')}" placeholder="https://api.openai.com/v1"></label>
+    <label class="field">API key <input data-k="api_key" data-i="${i}" type="password" placeholder="${r.has_api_key?'stored; leave blank to keep':'required'}"></label>
+    <label class="field">Timeout <input data-k="timeout" data-i="${i}" type="number" min="2" max="120" value="${Number(r.timeout||30)}"></label>
+    <div class="actions"><button class="btn secondary" onclick="llmConnections.splice(${i},1);renderLlmRoutes()"><i class="fa-solid fa-trash"></i> Remove</button></div></div>`).join('');
+  document.querySelectorAll('#llmRoutes input').forEach(x=>x.onchange=()=>{
+    let r=llmConnections[Number(x.dataset.i)],k=x.dataset.k;
+    r[k]=x.type==='checkbox'?x.checked:(x.type==='number'?Number(x.value):x.value);
+  });
+}
+async function llmRoutes(){let r=await fetch('/api/llm/routes'),j=await r.json();llmConnections=j.connections||[];renderLlmRoutes();$('#llmStatus').textContent='Default fallback: '+(j.default||'local-ai')}
+function addLlmRoute(){llmConnections.push({id:'external-ai',label:'External AI',model:'openai/gpt-5',api_base:'https://api.openai.com/v1',enabled:true,priority:10,timeout:20,has_api_key:false});renderLlmRoutes()}
+async function saveLlmRoutes(){let r=await fetch('/api/llm/routes',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({connections:llmConnections})}),j=await r.json();if(r.ok){llmConnections=j.connections||[];renderLlmRoutes()}$('#llmStatus').textContent=JSON.stringify(j,null,2)}
 </script></body>''')
 
 
@@ -48,7 +80,7 @@ def _session_sort_key(path):
     except (ValueError, TypeError):
         return "", -1
 
-def start_web(on_message, get_status, get_memory, wifi_scan, wifi_connect, get_camera, get_audio, set_audio, get_devices, get_config, set_config):
+def start_web(on_message, get_status, get_memory, wifi_scan, wifi_connect, get_camera, get_audio, set_audio, get_devices, get_config, set_config, get_llm_routes=None, set_llm_routes=None):
     password=os.environ.get("B2_WEB_PASSWORD")
     if not password: print("Web dashboard disabled: B2_WEB_PASSWORD is not set."); return None
     username=os.environ.get("B2_WEB_USERNAME","admin"); host=os.environ.get("B2_WEB_HOST","0.0.0.0"); port=int(os.environ.get("B2_WEB_PORT","8088")); log_file=os.environ.get("B2_LOG_FILE","/var/log/b2-droid/app.log"); log_dir=Path(os.environ.get("B2_LOG_DIR","/var/log/b2-droid"))
@@ -75,6 +107,7 @@ def start_web(on_message, get_status, get_memory, wifi_scan, wifi_connect, get_c
                 elif self.path=="/api/audio":data=get_audio()
                 elif self.path=="/api/audio/devices":data=get_devices()
                 elif self.path=="/api/config":data=get_config()
+                elif self.path=="/api/llm/routes" and get_llm_routes:data=get_llm_routes()
                 elif self.path=="/api/wifi":data={"networks":wifi_scan()}
                 elif self.path.startswith("/api/camera.jpg"):
                     body=get_camera()
@@ -109,6 +142,7 @@ def start_web(on_message, get_status, get_memory, wifi_scan, wifi_connect, get_c
                 elif self.path=="/api/wifi":result=wifi_connect(str(data.get("ssid",""))[:128],str(data.get("password",""))[:256])
                 elif self.path=="/api/audio":result=set_audio(data.get("volume",65),data.get("automatic",True))
                 elif self.path=="/api/config":result=set_config(data.get("settings",{}))
+                elif self.path=="/api/llm/routes" and set_llm_routes:result=set_llm_routes(data)
                 else:return self.send(404,b'{"error":"not found"}')
                 self.send(200,json.dumps(result).encode())
             except Exception as e:self.send(400,json.dumps({"error":str(e)}).encode())
